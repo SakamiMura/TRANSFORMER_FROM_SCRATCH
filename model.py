@@ -43,9 +43,48 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+
+class LayerNormalization(nn.Module):
+
+    def __init__(self, eps: float = 10**-6):
+        super().__init__()
+        self.eps = eps
+        self.alpha = nn.Parameter(torch.ones(1))
+        self.bias = nn.Parameter(torch.zeros(1))
+
+    def forward(self,x):
+        mean = x.mean(dim = -1, keepdim = True)
+        std = x.std(dim = -1, keepdim = True)
+        return self.alpha * (x - mean) / (std + self.eps) + self.bias
     
 
-    
+## MY IMPLEMENTATION UNDERSTABLE
+class FeedForwardBlock(nn.Module):
+
+    def __init__(self,d_model: int, d_ff:int, dropout: float):
+        super().__init__()
+        self.linear_1 = nn.Linear(d_model, d_ff)
+        self.dropout = nn.Dropout(dropout)
+        self.linear_2 = nn.Linear(d_ff, d_model)
+
+    def forward(self,x):
+        #Batch Seq_Len, d_model --> Batch, Seq_Len, d_ff -> Batch Seq_Len, d_model
+        x = self.linear_1(x)
+        x = torch.relu(x)                  
+        x = self.dropout(x)        
+        x = self.linear_2(x)       
+        return x
 
 
+# # TUTORIAL VERSION
+# class FeedForwardBlock(nn.Module):
+
+#     def __init__(self,d_model: int, d_ff:int, dropout: float):
+#         super().__init__()
+#         self.linear_1 = nn.Linear(d_model, d_ff)
+#         self.dropout = nn.Dropout(dropout)
+#         self.linear_2 = nn.Linear(d_ff, d_model)
     
+#     def forward(self,x):
+#         #Batch Seq_Len, d_model --> Batch, Seq_Len, d_ff -> Batch Seq_Len, d_model
+#         return self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
