@@ -45,7 +45,6 @@ def greedy_decode(model, source,source_mask,tokenizer_src,tokenizer_tgt, max_len
 
     return decoder_input.squeeze(0)
 
-
 def run_validation(model, validation_ds, tokenizer_src, toknizer_tgt, max_len, device, print_msg, global_state, writer, num_examples = 2):
     model.eval()
     count = 0
@@ -74,8 +73,33 @@ def run_validation(model, validation_ds, tokenizer_src, toknizer_tgt, max_len, d
             if count == num_examples:
                 break
 
+def load_tmx(path, src_lang='en', tgt_lang='pl'):
+    ns_lang = "{http://www.w3.org/XML/1998/namespace}lang"  # xml:lang namespace
+    root = ET.parse(path).getroot()
+    ds = []
+    for tu in root.iter("tu"):
+        src_list = []
+        tgt_list = []
+        for tuv in tu.findall("tuv"):
+            lang = (tuv.attrib.get(ns_lang)
+                    or tuv.attrib.get("xml:lang")
+                    or tuv.attrib.get("lang"))
+            seg = tuv.findtext("seg")
+            if seg is None:
+                seg = seg.strip()
+            if not lang or not seg:
+                continue
+            lang_low = lang.lower()
+            if lang_low.startswith(src_lang):
+                src_list.append(seg)
+            elif lang_low.startswith(tgt_lang):
+                tgt_list.append(seg)
+        for s in src_list:
+            for t in tgt_list:
+                ds.append({"translation": {src_lang: s, tgt_lang: t}})
+    return ds     
 
-
+    
 
 def get_all_senteces(ds, lang):
     for item in ds:
@@ -86,7 +110,7 @@ def get_or_build_tokenizer(config, ds, lang):
     if not Path.exists(tokenizer_path):
         tokenizer = Tokenizer(WordLevel(unk_token='[UNK]'))
         tokenizer.pre_tokenizer = Whitespace()
-        trainer = WordLevelTrainer(special_tokens=["[UNK]","[PAD]","[SOS]","[EOS]"], min_frequency = 2)
+        trainer = WordLevelTrainer(special_tokens=["[UNK]","[PAD]","[SOS]","[EOS]"], min_frequency = 2)        
         tokenizer.train_from_iterator(get_all_senteces(ds, lang), trainer=trainer)
         tokenizer.save(str(tokenizer_path))
     else:
@@ -95,7 +119,11 @@ def get_or_build_tokenizer(config, ds, lang):
 
 def get_ds(config):
 
-    ds_raw = load_dataset('opus_books',f'{config["lang_src"]}-{config["lang_tgt"]}',split='train')
+    ds_raw = load_tmx("data/eng-pol.tmx", src_lang="en", tgt_lang="pl")
+    # hugging face data_load
+    # ds_raw = load_dataset('opus_books',f'{config["lang_src"]}-{config["lang_tgt"]}',split='train')
+    print(ds_raw[10])
+
 
     # Build tokenizers
     tokenizer_src = get_or_build_tokenizer(config,ds_raw,config['lang_src'])
@@ -109,6 +137,9 @@ def get_ds(config):
     train_ds = BilingualDataset(train_ds_raw, tokenizer_src, tokenizer_tgt,config['lang_src'],config['lang_tgt'], config['seq_len'])
     val_ds = BilingualDataset(val_ds_raw, tokenizer_src, tokenizer_tgt,config['lang_src'],config['lang_tgt'], config['seq_len'])
     
+    sample = train_ds[1]
+
+
     max_len_src = 0
     max_len_tgt = 0
     for item in ds_raw:
@@ -126,7 +157,6 @@ def get_ds(config):
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
 
 
-#
 
 def get_model(config, vocab_src_Len, vocab_tgt_Len):
     model = build_transformer(vocab_src_Len,vocab_tgt_Len, config['seq_len'],config['seq_len'],config['d_model'])
@@ -199,23 +229,23 @@ def train_model(config):
             # Update the weights
             optimizer.step()
             optimizer.zero_grad()
-
-            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
-
             global_step += 1
-            
 
-    # save the model per epoch
-    model_filename = get_weights_file_path(config,f'{epoch:02d}')
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'global_step':global_step
-        },model_filename)
+            if global_step % 150 == 0:
+                run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
+
+
+        # save the model per epoch
+        model_filename = get_weights_file_path(config,f'{epoch:02d}')
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'global_step':global_step
+            },model_filename)
 
 
 if __name__ == '__main__':
-    warnings.filterwarnings('ignore')
     config = get_config()
+    # get_ds(config)
     train_model(config)

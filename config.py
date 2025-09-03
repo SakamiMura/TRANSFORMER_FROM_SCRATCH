@@ -1,11 +1,11 @@
 from pathlib import Path
 
 def get_config():
-    return{
-        "batch_size": 8,
+    return {
+        "batch_size": 12,
         "num_epochs": 20,
-        "lr": 10**-4,
-        "seq_len": 560,
+        "lr": 2e-4,
+        "seq_len": 104,
         "d_model": 512,
         "lang_src": "en",
         "lang_tgt": "pl",
@@ -13,7 +13,8 @@ def get_config():
         "model_basename": "tmodel_",
         "preload": None,
         "tokenizer_file": "tokenizer_{0}.json",
-        "experiment_name": "runs/tmodel"
+        "experiment_name": "runs/tmodel",
+        "tmx_path": "data/eng-pol.tmx"
     }
 
 def get_weights_file_path(config, epoch: str):
@@ -21,3 +22,4 @@ def get_weights_file_path(config, epoch: str):
     model_basename = config['model_basename']
     model_filename = f"{model_basename}{epoch}.pt"
     return str(Path('.')/model_folder / model_filename)
+
