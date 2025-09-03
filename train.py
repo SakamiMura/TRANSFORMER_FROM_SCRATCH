@@ -1,9 +1,11 @@
 import torch 
+import warnings
 from tqdm import tqdm
 import torch.nn as nn
 from pathlib import Path
 from tokenizers import Tokenizer
 from datasets import load_dataset
+import xml.etree.ElementTree as ET
 from model import build_transformer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
@@ -12,6 +14,67 @@ from dataset import BilingualDataset, causal_mask
 from torch.utils.tensorboard import SummaryWriter
 from config import get_weights_file_path, get_config
 from torch.utils.data import Dataset, DataLoader, random_split
+
+def greedy_decode(model, source,source_mask,tokenizer_src,tokenizer_tgt, max_len, device):
+    sos_idx = tokenizer_tgt.token_to_id('[SOS]')
+    eos_idx = tokenizer_tgt.token_to_id('[EOS]')
+
+    # precomputer the encoder output and reuse it for every token we get from decoder
+    encoder_output = model.encode(source, source_mask)
+
+    # initialize the decoder
+    decoder_input = torch.empty(1,1).fill_(sos_idx).type_as(source).to(device)
+    while True:
+        if decoder_input.size(1) == max_len:
+            break
+
+        # Build mask for the target (decoder input)
+        decoder_mask = causal_mask(decoder_input.size(1)).type_as(source_mask).to(device)
+
+        #calculate the output of the decoder
+        out = model.decode(encoder_output, source_mask, decoder_input, decoder_mask)
+
+        #Get the next token
+        prob = model.project(out[:,-1])
+        # Select the token with the max probablility (becausae its a greedy search)
+        _, next_word = torch.max(prob, dim=1)
+        decoder_input = torch.cat([decoder_input,torch.empty(1,1).type_as(source).fill_(next_word.item()).to(device)],dim=1)
+
+        if next_word == eos_idx:
+            break
+
+    return decoder_input.squeeze(0)
+
+
+def run_validation(model, validation_ds, tokenizer_src, toknizer_tgt, max_len, device, print_msg, global_state, writer, num_examples = 2):
+    model.eval()
+    count = 0
+
+    console_width = 80
+    with torch.no_grad():
+        for batch in validation_ds:
+            count += 1
+            encoder_input = batch['encoder_input'].to(device)
+            encoder_mask = batch['encoder_mask'].to(device)
+
+            assert encoder_input.size(0) == 1
+
+            model_out = greedy_decode(model, encoder_input, encoder_mask, tokenizer_src, toknizer_tgt ,max_len, device)
+
+            source_text = batch['src_text'][0]
+            target_text = batch['tgt_text'][0]
+            model_out_text = toknizer_tgt.decode(model_out.detach().cpu().numpy())
+
+
+            print_msg('-'*console_width)
+            print_msg(f'SOURCE: {source_text}')
+            print_msg(f'TARGET: {target_text}')
+            print_msg(f'PREDICTED: {model_out_text}')
+
+            if count == num_examples:
+                break
+
+
 
 
 def get_all_senteces(ds, lang):
@@ -78,6 +141,13 @@ def train_model(config):
     
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config,tokenizer_src.get_vocab_size(),tokenizer_tgt.get_vocab_size()).to(device)
+
+
+    # print("Model architecture:")
+    # print(model)
+    # return
+    # Return here to prevent the training loop from starting
+
     # Tensorboard
     writer = SummaryWriter(config['experiment_name'])
 
@@ -91,20 +161,61 @@ def train_model(config):
         state = torch.load(model_filename)
         initial_epoch - state['epoch'] + 1
         optimizer.load_state_dict(state['optimizer_state_dict'])
-        global_steop = state['globa_step']
+        global_step = state['global_step']
 
     loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer_src.token_to_id('[PAD]'), label_smoothing=0.1).to(device)
 
     for epoch in range(initial_epoch, config['num_epochs']):
-        model.train()
-        batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch:02d}')
         
+        batch_iterator = tqdm(train_dataloader, desc=f'Processing epoch {epoch:02d}')
+
         for batch in batch_iterator:
 
+            model.train()
             encoder_input = batch['encoder_input'].to(device) # [B, Seq_Len]
             decoder_input = batch['decoder_input'].to(device) # [B, Seq_Len]
             encoder_mask = batch['encoder_mask'].to(device) # [B, 1, 1 Seq_Len]
             decoder_mask = batch['decoder_mask'].to(device) # [B, 1, Seq_Len,  Seq_Len]
 
-            # run the tensors throguh the transformer 
+            # run the tensors throguh the transformer
+            encoder_output = model.encode(encoder_input,encoder_mask) # [B, Seq_len, D_model]
+            decoder_output = model.decode(encoder_output, encoder_mask,decoder_input, decoder_mask) # [B, Seq_len, D_model]
+            proj_output = model.project(decoder_output) # [B, Seq_len, tgt_vocab_size]
 
+            label = batch['label'].to(device) # [B, Seq_Len]
+            
+            # [B, Seq_len, tgt_vocab_size] --> # [B * Seq_len, tgt_vocab_size]
+            loss = loss_fn(proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1))
+            batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
+
+
+            # Log the loss
+            writer.add_scalar('train loss',loss.item(), global_step)
+            writer.flush()
+
+            # Backpropagate the loss
+            loss.backward()
+
+            # Update the weights
+            optimizer.step()
+            optimizer.zero_grad()
+
+            run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
+
+            global_step += 1
+            
+
+    # save the model per epoch
+    model_filename = get_weights_file_path(config,f'{epoch:02d}')
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'global_step':global_step
+        },model_filename)
+
+
+if __name__ == '__main__':
+    warnings.filterwarnings('ignore')
+    config = get_config()
+    train_model(config)

@@ -126,7 +126,7 @@ class MultiHeadAttentionBlock(nn.Module):
         # [batch, h, seq_len, d_k --> batch, h, seq_len, seq_len]
         attention_scores = (query @ key.transpose(-2,-1)) / math.sqrt(d_k)
         if mask is not None:
-            attention_scores.masked_fill(mask == 0, -1e9)
+            attention_scores.masked_fill_(mask == 0, -1e9)
         attention_scores = attention_scores.softmax(dim = -1) # Batch, h seq_len, seq_len
         if dropout is not None:
             attention_scores = dropout(attention_scores)
@@ -216,8 +216,8 @@ class DecoderBlock(nn.Module):
     def forward(self, x, encoder_output, src_mask, tgt_mask):
 
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask))
-        x = self.residual_connections[1](x, self.cross_attention_block(x,encoder_output,encoder_output,src_mask))
-        x = self.residual_connections[3](x, self.feed_forward_block)
+        x = self.residual_connections[1](x, lambda x: self.cross_attention_block(x,encoder_output,encoder_output,src_mask))
+        x = self.residual_connections[2](x, self.feed_forward_block)
         return x
 
 # ==============================================================================
@@ -290,11 +290,11 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
     
     # embedding layers
     src_embed = InputEmbedding(d_model,src_vocab_size)
-    tgt_embed = InputEmbedding(d_model,src_vocab_size)
+    tgt_embed = InputEmbedding(d_model, tgt_vocab_size)
 
     # positional encoding
     src_pos = PositionalEncoding(d_model,src_seq_len,dropout)
-    tgt_pos = PositionalEncoding(d_model,src_seq_len,dropout)
+    tgt_pos = PositionalEncoding(d_model,tgt_seq_len,dropout)
 
     # encoder blocks
     encoder_blocks = []
@@ -311,7 +311,7 @@ def build_transformer(src_vocab_size: int, tgt_vocab_size: int, src_seq_len: int
         decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
         feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
         decoder_block = DecoderBlock(decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block, dropout)
-        decoder_block.append(decoder_block)
+        decoder_blocks.append(decoder_block)
 
     # encoder & decoder
     encoder = Encoder(nn.ModuleList(encoder_blocks))
