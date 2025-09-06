@@ -1,0 +1,19 @@
+# Model weights (large files)
+weights/
+weights/*
+
+# Optional: also exclude other large files
+*.pt
+*.pth
+*.bin
+
+# Tokenizer files (if large)
+tokenizer_*.json
+
+# TensorBoard logs
+runs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
